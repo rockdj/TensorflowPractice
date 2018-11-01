@@ -1,0 +1,151 @@
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+import tensorflow as tf
+import random
+import numpy as np
+
+
+# 创建词汇表 p_file正面评论文件 n_file负面评论文件
+def create_lexicon(fileName):
+	# 读取文件 并作分词操作
+	with open(fileName, 'r') as f:
+		result_lex = []
+		lines = f.readlines()
+		# print(lines)
+		# for循环每次处理一行评论 将评论内容做分词操作并转换为小写后存入列表result_lex  此时result_lex中每个元素为单个的单词
+		# 假如某行评论为"This movie is good" 在result_lex中为['this','movie','is','good']
+		for line in lines:
+			words = word_tokenize(line.lower())
+			result_lex += words
+
+		# print(len(result_lex))
+
+		# 词形还原(cats->cat)
+		lemmatizer = WordNetLemmatizer()
+		result_lex = [lemmatizer.lemmatize(word) for word in result_lex]
+		#FreqDist函数接受一个以字符串为元素的列表 返回一个字典 key是字符串 value是该字符串在列表里出现的次数
+		lex_freq = nltk.FreqDist(result_lex)
+		#print('词形还原且去重后的词汇数：' , len(lex_freq))
+		
+		#遍历字典 找出并返回出现次数在20-2000的词汇 
+		result_lex = [w for w in lex_freq if lex_freq[w] > 20 and lex_freq[w] < 2000]
+		#print('词频在20到2000之间的词汇数：', len(result_lex))
+		return result_lex	
+	
+	
+# 把每条评论转换为向量, 转换原理：假设词汇表lex为[‘woman’, ‘great’, ‘feel’, ‘actually’, ‘looking’, ‘latest’, ‘seen’, ‘is’]
+# 例如：评论’i think this movie is great’ 转换为features [0,1,0,0,0,0,0,1],把评论中出现的字在词汇表中标记，出现过的标记为1，其余标记为0：	
+# lex:词汇表；review:评论 label:评论的分类[1,0]表示pos  [0,1]表示neg
+# 返回的dataset列表中的每个元素是[features,label] 具体的clf将在main函数中添加  当输入的result_lex为pos则[1,0],neg为[0,1]
+def word_to_vector(result_lex,fileName, label):
+	lines = open(fileName,'r').readlines()
+	dataset = []
+	#分词和词形还原
+	for line in lines:
+		words = word_tokenize(line.lower())
+		lemmatizer = WordNetLemmatizer()
+		words = [lemmatizer.lemmatize(w) for w in words]
+		# 创造一个和词汇表长度相同且所有元素为0的列表features  然后用评论中每个词去遍历词汇表 
+		# 如果该词在词汇表内 则将features中对应位置的元素改为1
+		features = np.zeros(len(result_lex))
+		for word in words:
+			if word in result_lex:
+				features[result_lex.index(word)] = 1
+		dataset.append([features,label])
+	return dataset
+		
+#构造前馈神经网络
+def neural_network(data, n_input_layer, n_layer_1, n_layer_2, n_output_layer):
+	# 定义第一层"神经元"的权重和biases
+	layer_1_w_b = {'w_':tf.Variable(tf.random_normal([n_input_layer, n_layer_1])),
+	'b_':tf.Variable(tf.random_normal([n_layer_1]))}
+	# 定义第二层"神经元"的权重和biases
+	layer_2_w_b = {'w_':tf.Variable(tf.random_normal([n_layer_1, n_layer_2])), 
+	'b_':tf.Variable(tf.random_normal([n_layer_2]))}
+	# 定义输出层"神经元"的权重和biases
+	layer_output_w_b = {'w_':tf.Variable(tf.random_normal([n_layer_2, n_output_layer])), 
+	'b_':tf.Variable(tf.random_normal([n_output_layer]))}
+ 
+	# w·x+b
+	layer_1 = tf.add(tf.matmul(data, layer_1_w_b['w_']), layer_1_w_b['b_'])
+	layer_1 = tf.nn.relu(layer_1)  # 激活函数
+	layer_2 = tf.add(tf.matmul(layer_1, layer_2_w_b['w_']), layer_2_w_b['b_'])
+	layer_2 = tf.nn.relu(layer_2 ) # 激活函数
+	layer_output = tf.add(tf.matmul(layer_2, layer_output_w_b['w_']), layer_output_w_b['b_'])
+ 
+	return layer_output
+	
+# 使用数据训练神经网络
+# epochs=15，训练15次
+def train_neural_network(X, Y, train_dataset, test_dataset, batch_size, predict):
+	cost_func = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=predict, labels=Y))
+	optimizer = tf.train.AdamOptimizer().minimize(cost_func)
+	epochs = 15
+	with tf.Session() as session:
+		session.run(tf.global_variables_initializer())
+		random.shuffle(train_dataset)
+		train_x = train_dataset[:, 0] #features
+		train_y = train_dataset[:, 1] #labels
+		epoch_loss = 0
+		i = 0
+		for epoch in range(epochs):
+			
+			while i < len(train_x):
+				start = i
+				end = i + batch_size
+ 
+				batch_x = train_x[start:end]
+				batch_y = train_y[start:end]
+ 
+				_, c = session.run([optimizer, cost_func], feed_dict={X:list(batch_x),Y:list(batch_y)})
+				epoch_loss += c
+				i += batch_size
+			print(epoch, 'epoch_loss :', epoch_loss)
+		test_x = test_dataset[:, 0]
+		test_y = test_dataset[:, 1]
+		
+		# predict是经过模型预测得出的list 与label值Y做比较  
+		correct = tf.equal(tf.argmax(predict, 1), tf.argmax(Y, 1))
+		accuracy = tf.reduce_mean(tf.cast(correct, 'float'))
+		print('准确率：', accuracy.eval({X: list(test_x), Y: list(test_y)}))
+		
+#主函数main
+def main():
+	pos_file = 'pos.txt'
+	neg_file = 'neg.txt'
+
+	lex_pos = create_lexicon(pos_file) #处理后的pos词汇表
+	print('正面评论词汇数',len(lex_pos))
+	lex_neg = create_lexicon(neg_file) #处理后的neg词汇表
+	print('负面评论词汇数',len(lex_neg))
+	lex = lex_pos + lex_neg
+	dataset = []
+	dataset += word_to_vector(lex,pos_file, [1,0]) 
+	dataset += word_to_vector(lex,neg_file, [0,1])
+	print('总评论数',len(dataset))
+	
+	# 打乱数据顺序且将列表转换为数组  方便之后的操作
+	random.shuffle(dataset)
+	dataset = np.array(dataset)
+	
+	# 取总数据的20%做为测试集
+	test_size = int(len(dataset)*0.2)
+	train_dataset = dataset[:-test_size]
+	test_dataset = dataset[-test_size:]
+
+	n_input_layer = len(lex) #输入层
+	n_layer_1 = 1000		 #第一层神经元个数
+	n_layer_2 = 1000		 #第二层神经元个数
+	n_output_layer = 2		 #输出层
+	batch_size = 50  # 每次取50条评论进行训练
+
+	X = tf.placeholder('float', [None, len(train_dataset[0][0])])
+	Y = tf.placeholder('float')
+	predict = neural_network(X, n_input_layer, n_layer_1, n_layer_2, n_output_layer)
+	train_neural_network(X, Y, train_dataset, test_dataset, batch_size, predict)
+
+	
+	
+if __name__ == '__main__':
+	main()
